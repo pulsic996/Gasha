@@ -1,57 +1,90 @@
-const API_URL = "http://localhost:3000";
+const express = require('express');
+const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
+const app = report => express(); // Fixed standard declaration structure
 
-// Toggle Modals (Open/Close)
-function toggleModal(id) {
-    const modal = document.getElementById(id);
-    if (modal) {
-        modal.classList.toggle('hidden');
-    }
-}
+app.use(express.json());
+app.use(cors());
 
-// Unified Authentication Function
-async function handleAuth(type) {
-    // These IDs must match the 'id' attributes on your HTML input tags
-    const username = document.getElementById(`${type}-username`).value;
-    const password = document.getElementById(`${type}-password`).value;
+// --- SERVE FRONTEND & STATIC ASSETS ---
+app.use(express.static(path.join(__dirname, './'))); 
 
-    if (!username || !password) {
-        alert("Please fill in all fields");
-        return;
-    }
+// Health Check for 24/7 Stay-Awake (Cron-job.org)
+app.get('/ping', (req, res) => res.status(200).send("Server is Awake"));
 
-    try {
-        const response = await fetch(`${API_URL}/${type}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, password })
-        });
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
 
-        const data = await response.json();
-
-        if (response.ok) {
-            alert(data.message);
-            if (type === 'login' && data.token) {
-                // Store the login token in the browser
-                localStorage.setItem('gasha_token', data.token);
-                localStorage.setItem('gasha_user', username);
-                location.reload(); // Refresh to show logged-in state
-            } else {
-                toggleModal('register-modal'); // Close reg modal after success
-            }
-        } else {
-            alert("Error: " + data.message);
-        }
-    } catch (error) {
-        console.error("Connection error:", error);
-        alert("Server is offline. Did you run 'node server.js'?");
-    }
-}
-
-// Optional: Check if user is already logged in on page load
-window.onload = () => {
-    const savedUser = localStorage.getItem('gasha_user');
-    if (savedUser) {
-        console.log("Welcome back, " + savedUser);
-        // You could update the UI here to show a "Deposit" button instead of Login
+// --- DATABASE LOGIC ---
+const USERS_FILE = './users.json';
+const getUsers = () => {
+    if (!fs.existsSync(USERS_FILE)) return [];
+    try { 
+        return JSON.parse(fs.readFileSync(USERS_FILE)); 
+    } catch (e) { 
+        return []; 
     }
 };
+
+// --- REGISTRATION ---
+app.post('/register', (req, res) => {
+    const { phone, password } = req.body;
+    let users = getUsers();
+    if (users.find(u => u.phone === phone)) return res.status(400).json({ message: "Already registered!" });
+    
+    const newUser = { phone, password, balance: 0.00, points: 50.00 };
+    users.push(newUser);
+    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+    res.status(201).json({ message: "Success", user: newUser });
+});
+
+// --- LOGIN (WITH 9 & 10-DIGIT TRIAL FEATURE) ---
+app.post('/login', (req, res) => {
+    const { phone, password } = req.body;
+    let users = getUsers();
+    
+    // 1. Try to find existing user
+    let user = users.find(u => u.phone === phone && u.password === password);
+    
+    if (user) {
+        return res.json({ message: "Login successful!", user });
+    } 
+
+    // 2. TRIAL FEATURE: Auto-register if 9 or 10 digits and not found
+    const isTrialValid = /^\d{9,10}$/.test(phone);
+    if (isTrialValid) {
+        const newUser = { phone, password, balance: 0.00, points: 50.00 };
+        users.push(newUser);
+        fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+        return res.json({ message: "Trial Login Success", user: newUser });
+    }
+
+    res.status(401).json({ message: "Invalid credentials or not a valid 9 or 10-digit number" });
+});
+
+// --- TRANSACTIONS ---
+app.post('/transaction', (req, res) => {
+    const { phone, amount, type, accountNumber } = req.body;
+    let users = getUsers();
+    const userIndex = users.findIndex(u => u.phone === phone);
+    
+    if (userIndex !== -1) {
+        const amt = parseFloat(amount);
+        if (type === 'withdraw' && users[userIndex].balance < amt) {
+            return res.status(400).json({ message: "Insufficient balance!" });
+        }
+        users[userIndex].balance += (type === 'deposit' ? amt : -amt);
+        fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+        res.json({ message: "Success!", newBalance: users[userIndex].balance });
+    } else {
+        res.status(404).json({ message: "User not found" });
+    }
+});
+
+// --- RENDER DYNAMIC PORT BINDING ---
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Gashabet Trial Mode Live on Port ${PORT}`);
+});
